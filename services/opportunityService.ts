@@ -49,6 +49,39 @@ function toOneScoreDeficitUnits(sport: SupportedSport, scoreDiff: number): numbe
   return deficit / unitBySport[sport];
 }
 
+function toMockTimeRemaining(snapshot: MarketSnapshot): number {
+  const totalSeconds = Math.max(snapshot.totalPeriods * snapshot.periodLengthSeconds, 1);
+  const elapsedPeriods = Math.max(snapshot.period - 1, 0);
+  const elapsedSeconds =
+    elapsedPeriods * snapshot.periodLengthSeconds +
+    (snapshot.periodLengthSeconds - snapshot.secondsRemainingInPeriod);
+
+  return clamp(1 - elapsedSeconds / totalSeconds, 0, 1);
+}
+
+function toDeterministicSeed(id: string): number {
+  return id.split('').reduce((acc, char, index) => acc + char.charCodeAt(0) * (index + 1), 0);
+}
+
+function toMomentum(snapshot: MarketSnapshot): number {
+  // Mocked deterministic "tick change" between -1 and 1.
+  const seed = toDeterministicSeed(snapshot.id);
+  const progress = toGameProgress(snapshot);
+  const baseWave = Math.sin(seed * 0.05 + progress * 6);
+
+  return clamp(baseWave, -1, 1);
+}
+
+function toVolatility(snapshot: MarketSnapshot): number {
+  // Mocked deterministic recent movement proxy between 0 and 1.
+  const seed = toDeterministicSeed(snapshot.id);
+  const progress = toGameProgress(snapshot);
+  const movementA = Math.abs(Math.sin(seed * 0.09 + progress * 5));
+  const movementB = Math.abs(Math.cos(seed * 0.04 + progress * 3));
+
+  return clamp((movementA + movementB) / 2, 0, 1);
+}
+
 function computeEstimatedProbability(snapshot: MarketSnapshot): {
   estimatedTrueProbability: number;
   reason: string;
@@ -114,9 +147,29 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
   const extremityPenalty = Math.max(Math.abs(implied - 0.5) - 0.25, 0) * 0.1;
   adjustment *= 1 - extremityPenalty;
 
-  const estimatedTrueProbability = clamp(implied + adjustment, 0.01, 0.99);
+  const timeRemaining = toMockTimeRemaining(snapshot);
+  const momentum = toMomentum(snapshot);
+  const volatility = toVolatility(snapshot);
 
-  return { estimatedTrueProbability, reason };
+  // Additional deterministic mocked signal stack.
+  // Positive momentum slightly boosts conviction.
+  const momentumAdjustment = 0.02 * momentum;
+  // More time remaining gives greater room for reversion.
+  const timeAdjustment = 0.015 * (timeRemaining - 0.5);
+  // Higher volatility lowers confidence in edge quality.
+  const volatilityAdjustment = -0.02 * volatility;
+
+  adjustment += momentumAdjustment + timeAdjustment + volatilityAdjustment;
+
+  const estimatedTrueProbability = clamp(implied + adjustment, 0.01, 0.99);
+  const momentumDirection = momentum >= 0 ? 'upward' : 'downward';
+  const volatilityBand =
+    volatility > 0.65 ? 'high' : volatility > 0.35 ? 'moderate' : 'low';
+  const timeBand =
+    timeRemaining > 0.6 ? 'plenty of time left' : timeRemaining > 0.3 ? 'mid-game timing' : 'late-game time pressure';
+  const signalReason = `Signals: ${momentumDirection} momentum, ${volatilityBand} volatility, ${timeBand}`;
+
+  return { estimatedTrueProbability, reason: `${reason}. ${signalReason}` };
 }
 
 function toLabel(edge: number): OpportunityLabel {

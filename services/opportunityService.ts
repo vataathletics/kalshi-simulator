@@ -16,6 +16,9 @@ export interface MarketSnapshot {
 }
 
 export interface ScoredOpportunity extends MarketSnapshot {
+  momentum: number;
+  timeRemaining: number;
+  volatility: number;
   estimatedTrueProbability: number;
   edge: number;
   label: OpportunityLabel;
@@ -83,6 +86,9 @@ function toVolatility(snapshot: MarketSnapshot): number {
 }
 
 function computeEstimatedProbability(snapshot: MarketSnapshot): {
+  momentum: number;
+  timeRemaining: number;
+  volatility: number;
   estimatedTrueProbability: number;
   reason: string;
 } {
@@ -169,7 +175,13 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
     timeRemaining > 0.6 ? 'plenty of time left' : timeRemaining > 0.3 ? 'mid-game timing' : 'late-game time pressure';
   const signalReason = `Signals: ${momentumDirection} momentum, ${volatilityBand} volatility, ${timeBand}`;
 
-  return { estimatedTrueProbability, reason: `${reason}. ${signalReason}` };
+  return {
+    momentum,
+    timeRemaining,
+    volatility,
+    estimatedTrueProbability,
+    reason: `${reason}. ${signalReason}`,
+  };
 }
 
 function toLabel(edge: number): OpportunityLabel {
@@ -187,11 +199,15 @@ function toLabel(edge: number): OpportunityLabel {
 export function scoreOpportunities(markets: MarketSnapshot[]): ScoredOpportunity[] {
   return markets
     .map((market) => {
-      const { estimatedTrueProbability, reason } = computeEstimatedProbability(market);
+      const { momentum, timeRemaining, volatility, estimatedTrueProbability, reason } =
+        computeEstimatedProbability(market);
       const edge = estimatedTrueProbability - market.impliedProbability;
 
       return {
         ...market,
+        momentum,
+        timeRemaining,
+        volatility,
         estimatedTrueProbability,
         edge,
         label: toLabel(edge),

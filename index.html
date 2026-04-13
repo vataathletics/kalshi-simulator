@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kalshi Paper Trading Simulator</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Kalshi Paper Trading Simulator</h1>
+      <section class="card controls">
+        <h2>Simulation Controls</h2>
+        <div class="grid">
+          <label>
+            Position Size ($)
+            <input id="positionSize" type="number" min="1" step="1" value="10" />
+          </label>
+          <label>
+            Max Hold (minutes)
+            <input id="maxHoldMinutes" type="number" min="1" step="1" value="5" />
+          </label>
+          <label>
+            Tick Speed (ms)
+            <input id="tickMs" type="number" min="100" step="100" value="350" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="startBtn">Start Simulation</button>
+          <button id="resetBtn">Reset</button>
+        </div>
+        <p id="statusText" class="status">Ready.</p>
+      </section>
+
+      <section class="card metrics">
+        <h2>Performance</h2>
+        <div class="metric-grid">
+          <div><span>Running Realized PnL:</span> <strong id="realizedPnl">$0.00</strong></div>
+          <div><span>Wins:</span> <strong id="wins">0</strong></div>
+          <div><span>Losses:</span> <strong id="losses">0</strong></div>
+          <div><span>Avg Gain:</span> <strong id="avgGain">$0.00</strong></div>
+          <div><span>Avg Loss:</span> <strong id="avgLoss">$0.00</strong></div>
+          <div><span>Current Tick:</span> <strong id="tickPointer">0</strong></div>
+          <div><span>Last Price:</span> <strong id="lastPrice">-</strong></div>
+          <div><span>Signal:</span> <strong id="lastSignal">-</strong></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Active Positions</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Entry Time</th>
+              <th>Entry Price</th>
+              <th>Qty</th>
+              <th>Reason</th>
+              <th>Unrealized PnL</th>
+            </tr>
+          </thead>
+          <tbody id="activePositionsBody"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h2>Closed Trades</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Duration</th>
+              <th>Exit Rule</th>
+              <th>Realized PnL</th>
+            </tr>
+          </thead>
+          <tbody id="closedTradesBody"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

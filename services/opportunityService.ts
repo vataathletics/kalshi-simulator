@@ -2,6 +2,28 @@ export type SupportedSport = 'nba' | 'nhl' | 'nfl' | 'mlb';
 
 export type OpportunityLabel = 'strong_buy' | 'watch' | 'ignore';
 
+export interface StrategySettings {
+  strongBuyEdgeThreshold: number;
+  watchEdgeThreshold: number;
+  minimumMomentum: number;
+  maximumVolatility: number;
+  minimumTimeRemaining: number;
+  takeProfitPercent: number;
+  stopLossPercent: number;
+  maxHoldMinutes: number;
+}
+
+export const defaultStrategySettings: StrategySettings = {
+  strongBuyEdgeThreshold: 0.06,
+  watchEdgeThreshold: 0.02,
+  minimumMomentum: -0.1,
+  maximumVolatility: 0.85,
+  minimumTimeRemaining: 0.15,
+  takeProfitPercent: 0.03,
+  stopLossPercent: 0.02,
+  maxHoldMinutes: 5,
+};
+
 export interface MarketSnapshot {
   id: string;
   title: string;
@@ -184,24 +206,48 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
   };
 }
 
-function toLabel(edge: number): OpportunityLabel {
-  if (edge >= 0.06) {
+function toLabel(edge: number, settings: StrategySettings): OpportunityLabel {
+  if (edge >= settings.strongBuyEdgeThreshold) {
     return 'strong_buy';
   }
 
-  if (edge >= 0.02) {
+  if (edge >= settings.watchEdgeThreshold) {
     return 'watch';
   }
 
   return 'ignore';
 }
 
-export function scoreOpportunities(markets: MarketSnapshot[]): ScoredOpportunity[] {
+function meetsExecutionFilters(
+  opportunity: Pick<ScoredOpportunity, 'momentum' | 'volatility' | 'timeRemaining'>,
+  settings: StrategySettings,
+): boolean {
+  return (
+    opportunity.momentum >= settings.minimumMomentum &&
+    opportunity.volatility <= settings.maximumVolatility &&
+    opportunity.timeRemaining >= settings.minimumTimeRemaining
+  );
+}
+
+export function scoreOpportunities(
+  markets: MarketSnapshot[],
+  settings: StrategySettings = defaultStrategySettings,
+): ScoredOpportunity[] {
   return markets
     .map((market) => {
       const { momentum, timeRemaining, volatility, estimatedTrueProbability, reason } =
         computeEstimatedProbability(market);
       const edge = estimatedTrueProbability - market.impliedProbability;
+      const baseLabel = toLabel(edge, settings);
+      const executable = meetsExecutionFilters({ momentum, volatility, timeRemaining }, settings);
+      const label = baseLabel === 'ignore' || executable ? baseLabel : 'watch';
+      const filterReason = executable
+        ? 'Execution filters passed'
+        : `Execution filters failed (momentum ≥ ${(settings.minimumMomentum * 100).toFixed(
+            1,
+          )}%, volatility ≤ ${(settings.maximumVolatility * 100).toFixed(
+            1,
+          )}%, time remaining ≥ ${(settings.minimumTimeRemaining * 100).toFixed(1)}%)`;
 
       return {
         ...market,
@@ -210,8 +256,12 @@ export function scoreOpportunities(markets: MarketSnapshot[]): ScoredOpportunity
         volatility,
         estimatedTrueProbability,
         edge,
-        label: toLabel(edge),
-        reason,
+        label,
+        reason: `${reason}. ${filterReason}. Exit plan: take profit +${(
+          settings.takeProfitPercent * 100
+        ).toFixed(1)}%, stop loss -${(settings.stopLossPercent * 100).toFixed(1)}%, max hold ${
+          settings.maxHoldMinutes
+        }m.`,
       };
     })
     .sort((a, b) => b.edge - a.edge);

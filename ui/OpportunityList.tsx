@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ScoredOpportunity, StrategySettings } from '../services/opportunityService';
-import { defaultStrategySettings } from '../services/opportunityService';
+import { defaultStrategySettings, getScoredMockOpportunities } from '../services/opportunityService';
 
 interface PortfolioSettings {
   maxConcurrentPositions: number;
@@ -15,6 +15,7 @@ interface OpenPosition {
   title: string;
   entryTimeIso: string;
   entryTick: number;
+  holdTicks: number;
   positionSize: number;
   entryFee: number;
 }
@@ -50,19 +51,26 @@ interface StrategySessionSnapshot {
   portfolioSettings: PortfolioSettings;
 }
 
+interface TickStats {
+  tick: number;
+  opened: number;
+  closed: number;
+}
+
 interface SimulatorState {
   openedSequence: number;
   openPositions: OpenPosition[];
   closedTrades: SimulatedTrade[];
+  tickStats: TickStats[];
 }
 
 interface OpportunityListProps {
-  opportunities: ScoredOpportunity[];
   initialStrategySettings?: StrategySettings;
   onStrategySettingsChange?: (settings: StrategySettings) => void;
 }
 
 const TICK_MS = 60_000;
+const LOOP_INTERVAL_MS = 3_000;
 
 const defaultPortfolioSettings: PortfolioSettings = {
   maxConcurrentPositions: 3,
@@ -141,7 +149,6 @@ function computeSessionStats(trades: SimulatedTrade[], openPositions: OpenPositi
 }
 
 export function OpportunityList({
-  opportunities,
   initialStrategySettings = defaultStrategySettings,
   onStrategySettingsChange,
 }: OpportunityListProps) {
@@ -152,6 +159,7 @@ export function OpportunityList({
     openedSequence: 0,
     openPositions: [],
     closedTrades: [],
+    tickStats: [],
   });
   const [tick, setTick] = useState(0);
   const [sessionSnapshot, setSessionSnapshot] = useState<StrategySessionSnapshot>({
@@ -160,6 +168,11 @@ export function OpportunityList({
     portfolioSettings: clonePortfolioSettings(defaultPortfolioSettings),
   });
 
+  const opportunities = useMemo(
+    () => getScoredMockOpportunities(strategySettings, tick),
+    [strategySettings, tick],
+  );
+
   useEffect(() => {
     onStrategySettingsChange?.(strategySettings);
   }, [onStrategySettingsChange, strategySettings]);
@@ -167,26 +180,32 @@ export function OpportunityList({
   useEffect(() => {
     const timer = setInterval(() => {
       setTick((current) => current + 1);
-    }, 1200);
+    }, LOOP_INTERVAL_MS);
 
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
+    if (tick === 0) {
+      return;
+    }
+
     setSimulatorState((current) => {
       const tickNow = tick;
       const marketById = new Map(opportunities.map((opportunity) => [opportunity.id, opportunity]));
       const stillOpen: OpenPosition[] = [];
       const closedTrades = [...current.closedTrades];
+      let tradesClosedThisTick = 0;
 
       for (const position of current.openPositions) {
         const opportunity = marketById.get(position.marketId);
         if (!opportunity) {
-          stillOpen.push(position);
+          stillOpen.push({ ...position, holdTicks: position.holdTicks + 1 });
           continue;
         }
 
-        const holdDurationMinutes = (tickNow - position.entryTick) * (TICK_MS / 60_000);
+        const updatedPosition = { ...position, holdTicks: position.holdTicks + 1 };
+        const holdDurationMinutes = updatedPosition.holdTicks * (TICK_MS / 60_000);
         const returnPercent = computeReturnPercent(opportunity);
         const hitTakeProfit = returnPercent >= strategySettings.takeProfitPercent;
         const hitStopLoss = returnPercent <= -strategySettings.stopLossPercent;
@@ -195,7 +214,7 @@ export function OpportunityList({
         const shouldClose = hitTakeProfit || hitStopLoss || hitMaxHold || noLongerStrongBuy;
 
         if (!shouldClose) {
-          stillOpen.push(position);
+          stillOpen.push(updatedPosition);
           continue;
         }
 
@@ -204,19 +223,20 @@ export function OpportunityList({
           -strategySettings.stopLossPercent,
           strategySettings.takeProfitPercent,
         );
-        const grossPnl = Number((position.positionSize * boundedReturn).toFixed(2));
-        const exitFee = computeFees(position.positionSize, portfolioSettings.feeRate);
-        const fees = Number((position.entryFee + exitFee).toFixed(2));
+        const grossPnl = Number((updatedPosition.positionSize * boundedReturn).toFixed(2));
+        const exitFee = computeFees(updatedPosition.positionSize, portfolioSettings.feeRate);
+        const fees = Number((updatedPosition.entryFee + exitFee).toFixed(2));
         const netPnl = Number((grossPnl - fees).toFixed(2));
         const exitTimeIso = new Date(
           new Date(sessionSnapshot.startedAtIso).getTime() + tickNow * TICK_MS,
         ).toISOString();
 
+        tradesClosedThisTick += 1;
         closedTrades.push({
-          id: `${position.id}-closed-${tickNow}`,
-          marketId: position.marketId,
-          title: position.title,
-          entryTimeIso: position.entryTimeIso,
+          id: `${updatedPosition.id}-closed-${tickNow}`,
+          marketId: updatedPosition.marketId,
+          title: updatedPosition.title,
+          entryTimeIso: updatedPosition.entryTimeIso,
           exitTimeIso,
           holdDurationMinutes,
           grossPnl,
@@ -228,6 +248,7 @@ export function OpportunityList({
       const openMarketIds = new Set(stillOpen.map((position) => position.marketId));
       let nextSequence = current.openedSequence;
       let currentCapital = stillOpen.reduce((sum, position) => sum + position.positionSize, 0);
+      let tradesOpenedThisTick = 0;
 
       const strongBuys = opportunities.filter((opportunity) => opportunity.label === 'strong_buy');
       for (const opportunity of strongBuys) {
@@ -243,6 +264,7 @@ export function OpportunityList({
         }
 
         nextSequence += 1;
+        tradesOpenedThisTick += 1;
         const entryFee = computeFees(portfolioSettings.positionSize, portfolioSettings.feeRate);
         stillOpen.push({
           id: `position-${nextSequence}`,
@@ -252,6 +274,7 @@ export function OpportunityList({
             new Date(sessionSnapshot.startedAtIso).getTime() + tickNow * TICK_MS,
           ).toISOString(),
           entryTick: tickNow,
+          holdTicks: 0,
           positionSize: portfolioSettings.positionSize,
           entryFee,
         });
@@ -264,6 +287,7 @@ export function OpportunityList({
         openedSequence: nextSequence,
         openPositions: stillOpen,
         closedTrades,
+        tickStats: [...current.tickStats, { tick: tickNow, opened: tradesOpenedThisTick, closed: tradesClosedThisTick }],
       };
     });
   }, [opportunities, portfolioSettings, sessionSnapshot.startedAtIso, strategySettings, tick]);
@@ -312,11 +336,14 @@ export function OpportunityList({
     [simulatorState.closedTrades, simulatorState.openPositions],
   );
 
+  const latestTickStats = simulatorState.tickStats[simulatorState.tickStats.length - 1];
+
   const resetSession = () => {
     setSimulatorState({
       openedSequence: 0,
       openPositions: [],
       closedTrades: [],
+      tickStats: [],
     });
     setTick(0);
     setSessionSnapshot({
@@ -373,13 +400,16 @@ export function OpportunityList({
           </button>
         </header>
         <p className="reason">
-          Snapshot {new Date(sessionSnapshot.startedAtIso).toLocaleString()} · TP{' '}
-          {toPercent(sessionSnapshot.strategySettings.takeProfitPercent)} · SL{' '}
+          Snapshot {new Date(sessionSnapshot.startedAtIso).toLocaleString()} · Tick every {LOOP_INTERVAL_MS / 1000}s
+          · TP {toPercent(sessionSnapshot.strategySettings.takeProfitPercent)} · SL{' '}
           {toPercent(sessionSnapshot.strategySettings.stopLossPercent)} · Max hold{' '}
           {sessionSnapshot.strategySettings.maxHoldMinutes}m · Max positions{' '}
           {sessionSnapshot.portfolioSettings.maxConcurrentPositions}
         </p>
         <div className="metrics-row">
+          <span className="chip">Total ticks {tick}</span>
+          <span className="chip">Opened this tick {latestTickStats?.opened ?? 0}</span>
+          <span className="chip">Closed this tick {latestTickStats?.closed ?? 0}</span>
           <span className="chip">Trades {stats.totalTrades}</span>
           <span className="chip">Gross {toMoney(stats.grossPnl)}</span>
           <span className="chip">Fees {toMoney(-stats.totalFees)}</span>
@@ -399,7 +429,8 @@ export function OpportunityList({
           <div className="metrics-row">
             {simulatorState.openPositions.map((position) => (
               <span key={position.id} className="chip">
-                {position.title} · {new Date(position.entryTimeIso).toLocaleTimeString()} · ${position.positionSize}
+                {position.title} · {new Date(position.entryTimeIso).toLocaleTimeString()} · ${position.positionSize} ·{' '}
+                {position.holdTicks} ticks
               </span>
             ))}
           </div>

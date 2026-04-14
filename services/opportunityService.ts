@@ -293,10 +293,48 @@ export const mockMarketSnapshots: MarketSnapshot[] = [
   },
 ];
 
+const TICK_SECONDS = 45;
+
+function toBoundedSignedDelta(seed: number, tick: number, scale: number): number {
+  return Math.sin(seed * 0.017 + tick * 0.73) * scale;
+}
+
+function toSimulatedSnapshot(base: MarketSnapshot, tick: number): MarketSnapshot {
+  const seed = toDeterministicSeed(base.id);
+  const totalSeconds = Math.max(base.totalPeriods * base.periodLengthSeconds, 1);
+  const baseElapsedSeconds =
+    Math.max(base.period - 1, 0) * base.periodLengthSeconds +
+    (base.periodLengthSeconds - base.secondsRemainingInPeriod);
+  const elapsedSeconds = (baseElapsedSeconds + tick * TICK_SECONDS + (seed % 21)) % totalSeconds;
+  const period = Math.min(Math.floor(elapsedSeconds / base.periodLengthSeconds) + 1, base.totalPeriods);
+  const elapsedInPeriod = elapsedSeconds % base.periodLengthSeconds;
+  const secondsRemainingInPeriod = Math.max(
+    1,
+    Math.round(base.periodLengthSeconds - elapsedInPeriod),
+  );
+  const scoreNoiseFor = toBoundedSignedDelta(seed, tick, 6);
+  const scoreNoiseAgainst = toBoundedSignedDelta(seed + 11, tick, 6);
+  const currentScoreFor = Math.max(0, Math.round(base.currentScoreFor + scoreNoiseFor));
+  const currentScoreAgainst = Math.max(0, Math.round(base.currentScoreAgainst + scoreNoiseAgainst));
+  const impliedDrift = toBoundedSignedDelta(seed + 37, tick, 0.08);
+  const impliedProbability = clamp(base.impliedProbability + impliedDrift, 0.03, 0.97);
+
+  return {
+    ...base,
+    period,
+    secondsRemainingInPeriod,
+    currentScoreFor,
+    currentScoreAgainst,
+    impliedProbability,
+  };
+}
+
 export function getScoredMockOpportunities(
   settings: StrategySettings = defaultStrategySettings,
+  tick = 0,
 ): ScoredOpportunity[] {
-  return scoreOpportunities(mockMarketSnapshots, settings);
+  const simulatedSnapshots = mockMarketSnapshots.map((snapshot) => toSimulatedSnapshot(snapshot, tick));
+  return scoreOpportunities(simulatedSnapshots, settings);
 }
 
 export function scoreOpportunities(

@@ -229,6 +229,76 @@ function meetsExecutionFilters(
   );
 }
 
+
+export const mockMarketSnapshots: MarketSnapshot[] = [
+  {
+    id: 'nba-knicks-celtics-q3',
+    title: 'Knicks to win vs Celtics',
+    sport: 'nba',
+    impliedProbability: 0.43,
+    currentScoreFor: 71,
+    currentScoreAgainst: 75,
+    period: 3,
+    secondsRemainingInPeriod: 198,
+    totalPeriods: 4,
+    periodLengthSeconds: 720,
+  },
+  {
+    id: 'nhl-rangers-bruins-p2',
+    title: 'Rangers to win vs Bruins',
+    sport: 'nhl',
+    impliedProbability: 0.39,
+    currentScoreFor: 1,
+    currentScoreAgainst: 2,
+    period: 2,
+    secondsRemainingInPeriod: 640,
+    totalPeriods: 3,
+    periodLengthSeconds: 1200,
+  },
+  {
+    id: 'nfl-bills-jets-q4',
+    title: 'Bills to win vs Jets',
+    sport: 'nfl',
+    impliedProbability: 0.58,
+    currentScoreFor: 20,
+    currentScoreAgainst: 17,
+    period: 4,
+    secondsRemainingInPeriod: 390,
+    totalPeriods: 4,
+    periodLengthSeconds: 900,
+  },
+  {
+    id: 'mlb-dodgers-padres-in7',
+    title: 'Dodgers to win vs Padres',
+    sport: 'mlb',
+    impliedProbability: 0.36,
+    currentScoreFor: 2,
+    currentScoreAgainst: 3,
+    period: 7,
+    secondsRemainingInPeriod: 120,
+    totalPeriods: 9,
+    periodLengthSeconds: 180,
+  },
+  {
+    id: 'nba-heat-bucks-q2',
+    title: 'Heat to win vs Bucks',
+    sport: 'nba',
+    impliedProbability: 0.49,
+    currentScoreFor: 46,
+    currentScoreAgainst: 46,
+    period: 2,
+    secondsRemainingInPeriod: 342,
+    totalPeriods: 4,
+    periodLengthSeconds: 720,
+  },
+];
+
+export function getScoredMockOpportunities(
+  settings: StrategySettings = defaultStrategySettings,
+): ScoredOpportunity[] {
+  return scoreOpportunities(mockMarketSnapshots, settings);
+}
+
 export function scoreOpportunities(
   markets: MarketSnapshot[],
   settings: StrategySettings = defaultStrategySettings,

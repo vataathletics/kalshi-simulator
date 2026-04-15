@@ -55,6 +55,7 @@ interface TickStats {
   tick: number;
   generated: number;
   strongBuy: number;
+  watch: number;
   opened: number;
   closed: number;
 }
@@ -112,6 +113,28 @@ function clamp(value: number, min: number, max: number): number {
 
 function computeFees(positionSize: number, feeRate: number): number {
   return Number((positionSize * feeRate).toFixed(2));
+}
+
+function toDeterministicSeed(value: string): number {
+  return value.split('').reduce((acc, char, index) => acc + char.charCodeAt(0) * (index + 1), 0);
+}
+
+function toUnitRandom(seed: number): number {
+  return Math.abs(Math.sin(seed * 12.9898) * 43758.5453123) % 1;
+}
+
+function shouldEnterOpportunity(opportunity: ScoredOpportunity, tick: number): boolean {
+  if (opportunity.label === 'strong_buy') {
+    return true;
+  }
+
+  if (opportunity.label === 'watch') {
+    const watchEntryProbability = 0.45;
+    const random = toUnitRandom(toDeterministicSeed(`${opportunity.id}-${tick}`));
+    return random < watchEntryProbability;
+  }
+
+  return false;
 }
 
 function computeSessionStats(trades: SimulatedTrade[], openPositions: OpenPosition[]): SessionStats {
@@ -253,8 +276,17 @@ export function OpportunityList({
       let tradesOpenedThisTick = 0;
 
       const strongBuys = opportunities.filter((opportunity) => opportunity.label === 'strong_buy');
-      for (const opportunity of strongBuys) {
+      const watchList = opportunities.filter((opportunity) => opportunity.label === 'watch');
+      const entryCandidates = opportunities.filter((opportunity) =>
+        opportunity.label === 'strong_buy' || opportunity.label === 'watch',
+      );
+
+      for (const opportunity of entryCandidates) {
         if (openMarketIds.has(opportunity.id)) {
+          continue;
+        }
+
+        if (!shouldEnterOpportunity(opportunity, tickNow)) {
           continue;
         }
 
@@ -295,6 +327,7 @@ export function OpportunityList({
             tick: tickNow,
             generated: opportunities.length,
             strongBuy: strongBuys.length,
+            watch: watchList.length,
             opened: tradesOpenedThisTick,
             closed: tradesClosedThisTick,
           },
@@ -421,6 +454,7 @@ export function OpportunityList({
           <span className="chip">Total ticks {tick}</span>
           <span className="chip">Generated this tick {latestTickStats?.generated ?? opportunities.length}</span>
           <span className="chip">Strong buy this tick {latestTickStats?.strongBuy ?? opportunities.filter((opportunity) => opportunity.label === 'strong_buy').length}</span>
+          <span className="chip">Watch this tick {latestTickStats?.watch ?? opportunities.filter((opportunity) => opportunity.label === 'watch').length}</span>
           <span className="chip">Opened this tick {latestTickStats?.opened ?? 0}</span>
           <span className="chip">Closed this tick {latestTickStats?.closed ?? 0}</span>
           <span className="chip">Trades {stats.totalTrades}</span>

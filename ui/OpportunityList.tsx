@@ -53,6 +53,8 @@ interface StrategySessionSnapshot {
 
 interface TickStats {
   tick: number;
+  generated: number;
+  strongBuy: number;
   opened: number;
   closed: number;
 }
@@ -73,8 +75,8 @@ const TICK_MS = 60_000;
 const LOOP_INTERVAL_MS = 3_000;
 
 const defaultPortfolioSettings: PortfolioSettings = {
-  maxConcurrentPositions: 3,
-  maxCapitalDeployed: 30,
+  maxConcurrentPositions: 12,
+  maxCapitalDeployed: 120,
   positionSize: 10,
   feeRate: 0.015,
 };
@@ -287,7 +289,16 @@ export function OpportunityList({
         openedSequence: nextSequence,
         openPositions: stillOpen,
         closedTrades,
-        tickStats: [...current.tickStats, { tick: tickNow, opened: tradesOpenedThisTick, closed: tradesClosedThisTick }],
+        tickStats: [
+          ...current.tickStats,
+          {
+            tick: tickNow,
+            generated: opportunities.length,
+            strongBuy: strongBuys.length,
+            opened: tradesOpenedThisTick,
+            closed: tradesClosedThisTick,
+          },
+        ],
       };
     });
   }, [opportunities, portfolioSettings, sessionSnapshot.startedAtIso, strategySettings, tick]);
@@ -408,6 +419,8 @@ export function OpportunityList({
         </p>
         <div className="metrics-row">
           <span className="chip">Total ticks {tick}</span>
+          <span className="chip">Generated this tick {latestTickStats?.generated ?? opportunities.length}</span>
+          <span className="chip">Strong buy this tick {latestTickStats?.strongBuy ?? opportunities.filter((opportunity) => opportunity.label === 'strong_buy').length}</span>
           <span className="chip">Opened this tick {latestTickStats?.opened ?? 0}</span>
           <span className="chip">Closed this tick {latestTickStats?.closed ?? 0}</span>
           <span className="chip">Trades {stats.totalTrades}</span>

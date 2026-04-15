@@ -89,7 +89,6 @@ function toDeterministicSeed(id: string): number {
 }
 
 function toMomentum(snapshot: MarketSnapshot): number {
-  // Mocked deterministic "tick change" between -1 and 1.
   const seed = toDeterministicSeed(snapshot.id);
   const progress = toGameProgress(snapshot);
   const baseWave = Math.sin(seed * 0.05 + progress * 6);
@@ -98,7 +97,6 @@ function toMomentum(snapshot: MarketSnapshot): number {
 }
 
 function toVolatility(snapshot: MarketSnapshot): number {
-  // Mocked deterministic recent movement proxy between 0 and 1.
   const seed = toDeterministicSeed(snapshot.id);
   const progress = toGameProgress(snapshot);
   const movementA = Math.abs(Math.sin(seed * 0.09 + progress * 5));
@@ -118,8 +116,6 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
   const progress = toGameProgress(snapshot);
   const implied = clamp(snapshot.impliedProbability, 0.01, 0.99);
 
-  // Positive adjustment = market likely too pessimistic.
-  // Negative adjustment = market likely fair/too optimistic.
   const earlyFactor = 1 - progress;
   const lateFactor = progress;
   const deficitUnits = toOneScoreDeficitUnits(snapshot.sport, scoreDiff);
@@ -171,7 +167,6 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
     reason = progress < 0.35 ? 'Early tie game often mispriced' : 'Tie game near fair value';
   }
 
-  // Slight moderation when implied probability already extreme.
   const extremityPenalty = Math.max(Math.abs(implied - 0.5) - 0.25, 0) * 0.1;
   adjustment *= 1 - extremityPenalty;
 
@@ -179,12 +174,8 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
   const momentum = toMomentum(snapshot);
   const volatility = toVolatility(snapshot);
 
-  // Additional deterministic mocked signal stack.
-  // Positive momentum slightly boosts conviction.
   const momentumAdjustment = 0.02 * momentum;
-  // More time remaining gives greater room for reversion.
   const timeAdjustment = 0.015 * (timeRemaining - 0.5);
-  // Higher volatility lowers confidence in edge quality.
   const volatilityAdjustment = -0.02 * volatility;
 
   adjustment += momentumAdjustment + timeAdjustment + volatilityAdjustment;
@@ -194,7 +185,11 @@ function computeEstimatedProbability(snapshot: MarketSnapshot): {
   const volatilityBand =
     volatility > 0.65 ? 'high' : volatility > 0.35 ? 'moderate' : 'low';
   const timeBand =
-    timeRemaining > 0.6 ? 'plenty of time left' : timeRemaining > 0.3 ? 'mid-game timing' : 'late-game time pressure';
+    timeRemaining > 0.6
+      ? 'plenty of time left'
+      : timeRemaining > 0.3
+      ? 'mid-game timing'
+      : 'late-game time pressure';
   const signalReason = `Signals: ${momentumDirection} momentum, ${volatilityBand} volatility, ${timeBand}`;
 
   return {
@@ -229,71 +224,106 @@ function meetsExecutionFilters(
   );
 }
 
+const SPORT_PROFILES: Record<
+  SupportedSport,
+  {
+    totalPeriods: number;
+    periodLengthSeconds: number;
+    scoreStdRange: [number, number];
+  }
+> = {
+  nba: { totalPeriods: 4, periodLengthSeconds: 720, scoreStdRange: [84, 122] },
+  nhl: { totalPeriods: 3, periodLengthSeconds: 1200, scoreStdRange: [1, 5] },
+  nfl: { totalPeriods: 4, periodLengthSeconds: 900, scoreStdRange: [10, 34] },
+  mlb: { totalPeriods: 9, periodLengthSeconds: 180, scoreStdRange: [1, 8] },
+};
 
-export const mockMarketSnapshots: MarketSnapshot[] = [
-  {
-    id: 'nba-knicks-celtics-q3',
-    title: 'Knicks to win vs Celtics',
-    sport: 'nba',
-    impliedProbability: 0.43,
-    currentScoreFor: 71,
-    currentScoreAgainst: 75,
-    period: 3,
-    secondsRemainingInPeriod: 198,
-    totalPeriods: 4,
-    periodLengthSeconds: 720,
-  },
-  {
-    id: 'nhl-rangers-bruins-p2',
-    title: 'Rangers to win vs Bruins',
-    sport: 'nhl',
-    impliedProbability: 0.39,
-    currentScoreFor: 1,
-    currentScoreAgainst: 2,
-    period: 2,
-    secondsRemainingInPeriod: 640,
-    totalPeriods: 3,
-    periodLengthSeconds: 1200,
-  },
-  {
-    id: 'nfl-bills-jets-q4',
-    title: 'Bills to win vs Jets',
-    sport: 'nfl',
-    impliedProbability: 0.58,
-    currentScoreFor: 20,
-    currentScoreAgainst: 17,
-    period: 4,
-    secondsRemainingInPeriod: 390,
-    totalPeriods: 4,
-    periodLengthSeconds: 900,
-  },
-  {
-    id: 'mlb-dodgers-padres-in7',
-    title: 'Dodgers to win vs Padres',
-    sport: 'mlb',
-    impliedProbability: 0.36,
-    currentScoreFor: 2,
-    currentScoreAgainst: 3,
-    period: 7,
-    secondsRemainingInPeriod: 120,
-    totalPeriods: 9,
-    periodLengthSeconds: 180,
-  },
-  {
-    id: 'nba-heat-bucks-q2',
-    title: 'Heat to win vs Bucks',
-    sport: 'nba',
-    impliedProbability: 0.49,
-    currentScoreFor: 46,
-    currentScoreAgainst: 46,
-    period: 2,
-    secondsRemainingInPeriod: 342,
-    totalPeriods: 4,
-    periodLengthSeconds: 720,
-  },
+const TEAMS_BY_SPORT: Record<SupportedSport, string[]> = {
+  nba: [
+    'Celtics',
+    'Knicks',
+    'Bucks',
+    'Heat',
+    'Suns',
+    'Nuggets',
+    'Warriors',
+    'Lakers',
+    'Mavericks',
+    'Timberwolves',
+  ],
+  nhl: ['Rangers', 'Bruins', 'Oilers', 'Canucks', 'Stars', 'Kings', 'Devils', 'Panthers'],
+  nfl: ['Bills', 'Jets', 'Chiefs', 'Ravens', '49ers', 'Eagles', 'Lions', 'Bengals'],
+  mlb: ['Dodgers', 'Padres', 'Yankees', 'Orioles', 'Braves', 'Astros', 'Mets', 'Phillies'],
+};
+
+const MARKET_VARIANTS = [
+  'to win',
+  'moneyline in regulation',
+  'to complete comeback',
+  'to close as favorite',
+  'to win before final period',
 ];
 
+const MARKET_UNIVERSE_SIZE = 220;
 const TICK_SECONDS = 45;
+const MIN_OPPORTUNITIES_PER_TICK = 24;
+const MAX_OPPORTUNITIES_PER_TICK = 84;
+
+function toUnitCycle(seed: number): number {
+  return Math.abs(Math.sin(seed * 12.9898) * 43758.5453123) % 1;
+}
+
+function buildMarketUniverse(): MarketSnapshot[] {
+  const sports: SupportedSport[] = ['nba', 'nhl', 'nfl', 'mlb'];
+  const universe: MarketSnapshot[] = [];
+
+  for (let index = 0; index < MARKET_UNIVERSE_SIZE; index += 1) {
+    const sport = sports[index % sports.length];
+    const teams = TEAMS_BY_SPORT[sport];
+    const teamA = teams[(index * 3) % teams.length];
+    const teamB = teams[(index * 3 + 5) % teams.length];
+    const variant = MARKET_VARIANTS[index % MARKET_VARIANTS.length];
+    const id = `${sport}-${teamA.toLowerCase()}-${teamB.toLowerCase()}-${variant
+      .replace(/\s+/g, '-')
+      .replace(/[^a-z-]/g, '')}-${index}`;
+    const seed = toDeterministicSeed(id);
+    const profile = SPORT_PROFILES[sport];
+
+    const totalSeconds = profile.totalPeriods * profile.periodLengthSeconds;
+    const initialElapsed = Math.floor(toUnitCycle(seed) * totalSeconds * 0.92);
+    const period = Math.min(
+      Math.floor(initialElapsed / profile.periodLengthSeconds) + 1,
+      profile.totalPeriods,
+    );
+    const elapsedInPeriod = initialElapsed % profile.periodLengthSeconds;
+    const secondsRemainingInPeriod = Math.max(
+      1,
+      Math.round(profile.periodLengthSeconds - elapsedInPeriod),
+    );
+
+    const [scoreMin, scoreMax] = profile.scoreStdRange;
+    const scoreFor = Math.round(scoreMin + toUnitCycle(seed + 19) * (scoreMax - scoreMin));
+    const scoreAgainst = Math.round(scoreMin + toUnitCycle(seed + 31) * (scoreMax - scoreMin));
+    const impliedProbability = clamp(0.22 + toUnitCycle(seed + 47) * 0.56, 0.05, 0.95);
+
+    universe.push({
+      id,
+      title: `${teamA} ${variant} vs ${teamB}`,
+      sport,
+      impliedProbability,
+      currentScoreFor: scoreFor,
+      currentScoreAgainst: scoreAgainst,
+      period,
+      secondsRemainingInPeriod,
+      totalPeriods: profile.totalPeriods,
+      periodLengthSeconds: profile.periodLengthSeconds,
+    });
+  }
+
+  return universe;
+}
+
+export const mockMarketSnapshots: MarketSnapshot[] = buildMarketUniverse();
 
 function toBoundedSignedDelta(seed: number, tick: number, scale: number): number {
   return Math.sin(seed * 0.017 + tick * 0.73) * scale;
@@ -305,19 +335,21 @@ function toSimulatedSnapshot(base: MarketSnapshot, tick: number): MarketSnapshot
   const baseElapsedSeconds =
     Math.max(base.period - 1, 0) * base.periodLengthSeconds +
     (base.periodLengthSeconds - base.secondsRemainingInPeriod);
-  const elapsedSeconds = (baseElapsedSeconds + tick * TICK_SECONDS + (seed % 21)) % totalSeconds;
+  const elapsedSeconds = (baseElapsedSeconds + tick * TICK_SECONDS + (seed % 43)) % totalSeconds;
   const period = Math.min(Math.floor(elapsedSeconds / base.periodLengthSeconds) + 1, base.totalPeriods);
   const elapsedInPeriod = elapsedSeconds % base.periodLengthSeconds;
-  const secondsRemainingInPeriod = Math.max(
-    1,
-    Math.round(base.periodLengthSeconds - elapsedInPeriod),
-  );
-  const scoreNoiseFor = toBoundedSignedDelta(seed, tick, 6);
-  const scoreNoiseAgainst = toBoundedSignedDelta(seed + 11, tick, 6);
+  const secondsRemainingInPeriod = Math.max(1, Math.round(base.periodLengthSeconds - elapsedInPeriod));
+
+  const scoreNoiseFor = toBoundedSignedDelta(seed + 11, tick, base.sport === 'nba' ? 12 : base.sport === 'nfl' ? 7 : 3);
+  const scoreNoiseAgainst = toBoundedSignedDelta(seed + 29, tick, base.sport === 'nba' ? 12 : base.sport === 'nfl' ? 7 : 3);
   const currentScoreFor = Math.max(0, Math.round(base.currentScoreFor + scoreNoiseFor));
   const currentScoreAgainst = Math.max(0, Math.round(base.currentScoreAgainst + scoreNoiseAgainst));
-  const impliedDrift = toBoundedSignedDelta(seed + 37, tick, 0.08);
-  const impliedProbability = clamp(base.impliedProbability + impliedDrift, 0.03, 0.97);
+
+  const trueProbWave = toBoundedSignedDelta(seed + 37, tick, 0.12);
+  const marketLagWave = toBoundedSignedDelta(seed + 71, tick + 2, 0.09);
+  const impliedProbability = clamp(base.impliedProbability + marketLagWave, 0.03, 0.97);
+  const syntheticTrueProbability = clamp(base.impliedProbability + trueProbWave, 0.03, 0.97);
+  const repricedImplied = clamp(impliedProbability + (syntheticTrueProbability - impliedProbability) * 0.2, 0.03, 0.97);
 
   return {
     ...base,
@@ -325,15 +357,32 @@ function toSimulatedSnapshot(base: MarketSnapshot, tick: number): MarketSnapshot
     secondsRemainingInPeriod,
     currentScoreFor,
     currentScoreAgainst,
-    impliedProbability,
+    impliedProbability: repricedImplied,
   };
+}
+
+function getOpportunitiesPerTick(tick: number): number {
+  const span = MAX_OPPORTUNITIES_PER_TICK - MIN_OPPORTUNITIES_PER_TICK;
+  const oscillation = (Math.sin(tick * 0.42) + 1) / 2;
+  return MIN_OPPORTUNITIES_PER_TICK + Math.round(span * oscillation);
+}
+
+function getUniverseSliceForTick(tick: number): MarketSnapshot[] {
+  const targetCount = getOpportunitiesPerTick(tick);
+  const start = (tick * 11) % mockMarketSnapshots.length;
+
+  return Array.from({ length: targetCount }, (_, offset) => {
+    const index = (start + offset * 3) % mockMarketSnapshots.length;
+    return mockMarketSnapshots[index];
+  });
 }
 
 export function getScoredMockOpportunities(
   settings: StrategySettings = defaultStrategySettings,
   tick = 0,
 ): ScoredOpportunity[] {
-  const simulatedSnapshots = mockMarketSnapshots.map((snapshot) => toSimulatedSnapshot(snapshot, tick));
+  const selectedSnapshots = getUniverseSliceForTick(tick);
+  const simulatedSnapshots = selectedSnapshots.map((snapshot) => toSimulatedSnapshot(snapshot, tick));
   return scoreOpportunities(simulatedSnapshots, settings);
 }
 

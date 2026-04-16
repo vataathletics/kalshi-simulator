@@ -13,6 +13,7 @@ Deterministic, mock-data-driven paper trading simulator UI built in Next.js + Ty
   - max concurrent positions is not exceeded
   - max capital deployed is not exceeded
 - Auto-closes positions on take-profit, stop-loss, max hold time, or signal downgrade.
+- Replays the same opportunity stream across multiple exit profiles for side-by-side fee-aware comparison.
 - Tracks simulation-cycle telemetry:
   - total ticks elapsed
   - trades opened on the current tick
@@ -31,6 +32,7 @@ Deterministic, mock-data-driven paper trading simulator UI built in Next.js + Ty
   - average gross/net per trade
   - win rate
   - max drawdown
+  - average hold duration
   - open positions count
   - deployed capital
 
@@ -38,7 +40,8 @@ Deterministic, mock-data-driven paper trading simulator UI built in Next.js + Ty
 
 The dashboard includes compact controls for:
 
-- strategy thresholds (edge, momentum, volatility, time, TP/SL, max hold)
+- strategy thresholds (edge, momentum, volatility, time)
+- built-in exit profile matrix (TP/SL/max hold variants)
 - max concurrent positions
 - max capital deployed
 - per-trade position size

@@ -9,6 +9,14 @@ interface PortfolioSettings {
   feeRate: number;
 }
 
+interface ExitProfile {
+  id: string;
+  label: string;
+  takeProfitPercent: number;
+  stopLossPercent: number;
+  maxHoldMinutes: number;
+}
+
 interface OpenPosition {
   id: string;
   marketId: string;
@@ -41,6 +49,7 @@ interface SessionStats {
   avgNetPerTrade: number;
   winRate: number;
   maxDrawdown: number;
+  avgHoldDurationMinutes: number;
   openPositionsCount: number;
   capitalDeployed: number;
 }
@@ -60,11 +69,15 @@ interface TickStats {
   closed: number;
 }
 
-interface SimulatorState {
+interface ProfileSimulatorState {
   openedSequence: number;
   openPositions: OpenPosition[];
   closedTrades: SimulatedTrade[];
+}
+
+interface SimulatorState {
   tickStats: TickStats[];
+  profileStates: Record<string, ProfileSimulatorState>;
 }
 
 interface OpportunityListProps {
@@ -74,6 +87,30 @@ interface OpportunityListProps {
 
 const TICK_MS = 60_000;
 const LOOP_INTERVAL_MS = 3_000;
+
+const exitProfiles: ExitProfile[] = [
+  {
+    id: 'profile-fast',
+    label: 'TP 3% · SL 2% · Hold 1m',
+    takeProfitPercent: 0.03,
+    stopLossPercent: 0.02,
+    maxHoldMinutes: 1,
+  },
+  {
+    id: 'profile-balanced',
+    label: 'TP 5% · SL 2% · Hold 3m',
+    takeProfitPercent: 0.05,
+    stopLossPercent: 0.02,
+    maxHoldMinutes: 3,
+  },
+  {
+    id: 'profile-wide',
+    label: 'TP 7% · SL 3% · Hold 5m',
+    takeProfitPercent: 0.07,
+    stopLossPercent: 0.03,
+    maxHoldMinutes: 5,
+  },
+];
 
 const defaultPortfolioSettings: PortfolioSettings = {
   maxConcurrentPositions: 12,
@@ -91,6 +128,7 @@ const emptyStats: SessionStats = {
   avgNetPerTrade: 0,
   winRate: 0,
   maxDrawdown: 0,
+  avgHoldDurationMinutes: 0,
   openPositionsCount: 0,
   capitalDeployed: 0,
 };
@@ -147,6 +185,7 @@ function computeSessionStats(trades: SimulatedTrade[], openPositions: OpenPositi
   const totalFees = trades.reduce((sum, trade) => sum + trade.fees, 0);
   const netPnl = trades.reduce((sum, trade) => sum + trade.netPnl, 0);
   const wins = trades.filter((trade) => trade.netPnl > 0).length;
+  const totalHoldDuration = trades.reduce((sum, trade) => sum + trade.holdDurationMinutes, 0);
 
   let runningNet = 0;
   let peak = 0;
@@ -168,9 +207,23 @@ function computeSessionStats(trades: SimulatedTrade[], openPositions: OpenPositi
     avgNetPerTrade: totalTrades ? Number((netPnl / totalTrades).toFixed(2)) : 0,
     winRate: totalTrades ? wins / totalTrades : 0,
     maxDrawdown: Number(maxDrawdown.toFixed(2)),
+    avgHoldDurationMinutes: totalTrades ? Number((totalHoldDuration / totalTrades).toFixed(1)) : 0,
     openPositionsCount: openPositions.length,
     capitalDeployed: Number(capitalDeployed.toFixed(2)),
   };
+}
+
+function createEmptyProfileStates(): Record<string, ProfileSimulatorState> {
+  return Object.fromEntries(
+    exitProfiles.map((profile) => [
+      profile.id,
+      {
+        openedSequence: 0,
+        openPositions: [],
+        closedTrades: [],
+      },
+    ]),
+  );
 }
 
 export function OpportunityList({
@@ -181,12 +234,11 @@ export function OpportunityList({
   const [portfolioSettings, setPortfolioSettings] =
     useState<PortfolioSettings>(defaultPortfolioSettings);
   const [simulatorState, setSimulatorState] = useState<SimulatorState>({
-    openedSequence: 0,
-    openPositions: [],
-    closedTrades: [],
     tickStats: [],
+    profileStates: createEmptyProfileStates(),
   });
   const [tick, setTick] = useState(0);
+  const [activeProfileId, setActiveProfileId] = useState(exitProfiles[0].id);
   const [sessionSnapshot, setSessionSnapshot] = useState<StrategySessionSnapshot>({
     startedAtIso: new Date().toISOString(),
     strategySettings: cloneSettings(initialStrategySettings),
@@ -218,109 +270,126 @@ export function OpportunityList({
     setSimulatorState((current) => {
       const tickNow = tick;
       const marketById = new Map(opportunities.map((opportunity) => [opportunity.id, opportunity]));
-      const stillOpen: OpenPosition[] = [];
-      const closedTrades = [...current.closedTrades];
-      let tradesClosedThisTick = 0;
-
-      for (const position of current.openPositions) {
-        const opportunity = marketById.get(position.marketId);
-        if (!opportunity) {
-          stillOpen.push({ ...position, holdTicks: position.holdTicks + 1 });
-          continue;
-        }
-
-        const updatedPosition = { ...position, holdTicks: position.holdTicks + 1 };
-        const holdDurationMinutes = updatedPosition.holdTicks * (TICK_MS / 60_000);
-        const returnPercent = computeReturnPercent(opportunity);
-        const hitTakeProfit = returnPercent >= strategySettings.takeProfitPercent;
-        const hitStopLoss = returnPercent <= -strategySettings.stopLossPercent;
-        const hitMaxHold = holdDurationMinutes >= strategySettings.maxHoldMinutes;
-        const noLongerStrongBuy = opportunity.label !== 'strong_buy';
-        const shouldClose = hitTakeProfit || hitStopLoss || hitMaxHold || noLongerStrongBuy;
-
-        if (!shouldClose) {
-          stillOpen.push(updatedPosition);
-          continue;
-        }
-
-        const boundedReturn = clamp(
-          returnPercent,
-          -strategySettings.stopLossPercent,
-          strategySettings.takeProfitPercent,
-        );
-        const grossPnl = Number((updatedPosition.positionSize * boundedReturn).toFixed(2));
-        const exitFee = computeFees(updatedPosition.positionSize, portfolioSettings.feeRate);
-        const fees = Number((updatedPosition.entryFee + exitFee).toFixed(2));
-        const netPnl = Number((grossPnl - fees).toFixed(2));
-        const exitTimeIso = new Date(
-          new Date(sessionSnapshot.startedAtIso).getTime() + tickNow * TICK_MS,
-        ).toISOString();
-
-        tradesClosedThisTick += 1;
-        closedTrades.push({
-          id: `${updatedPosition.id}-closed-${tickNow}`,
-          marketId: updatedPosition.marketId,
-          title: updatedPosition.title,
-          entryTimeIso: updatedPosition.entryTimeIso,
-          exitTimeIso,
-          holdDurationMinutes,
-          grossPnl,
-          fees,
-          netPnl,
-        });
-      }
-
-      const openMarketIds = new Set(stillOpen.map((position) => position.marketId));
-      let nextSequence = current.openedSequence;
-      let currentCapital = stillOpen.reduce((sum, position) => sum + position.positionSize, 0);
-      let tradesOpenedThisTick = 0;
+      const nextProfileStates: Record<string, ProfileSimulatorState> = {};
+      let openedThisTick = 0;
+      let closedThisTick = 0;
 
       const strongBuys = opportunities.filter((opportunity) => opportunity.label === 'strong_buy');
       const watchList = opportunities.filter((opportunity) => opportunity.label === 'watch');
-      const entryCandidates = opportunities.filter((opportunity) =>
-        opportunity.label === 'strong_buy' || opportunity.label === 'watch',
+      const entryCandidates = opportunities.filter(
+        (opportunity) => opportunity.label === 'strong_buy' || opportunity.label === 'watch',
       );
 
-      for (const opportunity of entryCandidates) {
-        if (openMarketIds.has(opportunity.id)) {
-          continue;
-        }
+      for (const profile of exitProfiles) {
+        const profileState = current.profileStates[profile.id] ?? {
+          openedSequence: 0,
+          openPositions: [],
+          closedTrades: [],
+        };
 
-        if (!shouldEnterOpportunity(opportunity, tickNow)) {
-          continue;
-        }
+        const stillOpen: OpenPosition[] = [];
+        const closedTrades = [...profileState.closedTrades];
+        let profileClosedThisTick = 0;
 
-        const underPositionLimit = stillOpen.length < portfolioSettings.maxConcurrentPositions;
-        const underCapitalLimit =
-          currentCapital + portfolioSettings.positionSize <= portfolioSettings.maxCapitalDeployed;
-        if (!underPositionLimit || !underCapitalLimit) {
-          continue;
-        }
+        for (const position of profileState.openPositions) {
+          const opportunity = marketById.get(position.marketId);
+          if (!opportunity) {
+            stillOpen.push({ ...position, holdTicks: position.holdTicks + 1 });
+            continue;
+          }
 
-        nextSequence += 1;
-        tradesOpenedThisTick += 1;
-        const entryFee = computeFees(portfolioSettings.positionSize, portfolioSettings.feeRate);
-        stillOpen.push({
-          id: `position-${nextSequence}`,
-          marketId: opportunity.id,
-          title: opportunity.title,
-          entryTimeIso: new Date(
+          const updatedPosition = { ...position, holdTicks: position.holdTicks + 1 };
+          const holdDurationMinutes = updatedPosition.holdTicks * (TICK_MS / 60_000);
+          const returnPercent = computeReturnPercent(opportunity);
+          const hitTakeProfit = returnPercent >= profile.takeProfitPercent;
+          const hitStopLoss = returnPercent <= -profile.stopLossPercent;
+          const hitMaxHold = holdDurationMinutes >= profile.maxHoldMinutes;
+          const noLongerStrongBuy = opportunity.label !== 'strong_buy';
+          const shouldClose = hitTakeProfit || hitStopLoss || hitMaxHold || noLongerStrongBuy;
+
+          if (!shouldClose) {
+            stillOpen.push(updatedPosition);
+            continue;
+          }
+
+          const boundedReturn = clamp(
+            returnPercent,
+            -profile.stopLossPercent,
+            profile.takeProfitPercent,
+          );
+          const grossPnl = Number((updatedPosition.positionSize * boundedReturn).toFixed(2));
+          const exitFee = computeFees(updatedPosition.positionSize, portfolioSettings.feeRate);
+          const fees = Number((updatedPosition.entryFee + exitFee).toFixed(2));
+          const netPnl = Number((grossPnl - fees).toFixed(2));
+          const exitTimeIso = new Date(
             new Date(sessionSnapshot.startedAtIso).getTime() + tickNow * TICK_MS,
-          ).toISOString(),
-          entryTick: tickNow,
-          holdTicks: 0,
-          positionSize: portfolioSettings.positionSize,
-          entryFee,
-        });
-        openMarketIds.add(opportunity.id);
-        currentCapital += portfolioSettings.positionSize;
+          ).toISOString();
+
+          profileClosedThisTick += 1;
+          closedTrades.push({
+            id: `${updatedPosition.id}-closed-${tickNow}`,
+            marketId: updatedPosition.marketId,
+            title: updatedPosition.title,
+            entryTimeIso: updatedPosition.entryTimeIso,
+            exitTimeIso,
+            holdDurationMinutes,
+            grossPnl,
+            fees,
+            netPnl,
+          });
+        }
+
+        const openMarketIds = new Set(stillOpen.map((position) => position.marketId));
+        let nextSequence = profileState.openedSequence;
+        let currentCapital = stillOpen.reduce((sum, position) => sum + position.positionSize, 0);
+        let profileOpenedThisTick = 0;
+
+        for (const opportunity of entryCandidates) {
+          if (openMarketIds.has(opportunity.id)) {
+            continue;
+          }
+
+          if (!shouldEnterOpportunity(opportunity, tickNow)) {
+            continue;
+          }
+
+          const underPositionLimit = stillOpen.length < portfolioSettings.maxConcurrentPositions;
+          const underCapitalLimit =
+            currentCapital + portfolioSettings.positionSize <= portfolioSettings.maxCapitalDeployed;
+          if (!underPositionLimit || !underCapitalLimit) {
+            continue;
+          }
+
+          nextSequence += 1;
+          profileOpenedThisTick += 1;
+          const entryFee = computeFees(portfolioSettings.positionSize, portfolioSettings.feeRate);
+          stillOpen.push({
+            id: `${profile.id}-position-${nextSequence}`,
+            marketId: opportunity.id,
+            title: opportunity.title,
+            entryTimeIso: new Date(
+              new Date(sessionSnapshot.startedAtIso).getTime() + tickNow * TICK_MS,
+            ).toISOString(),
+            entryTick: tickNow,
+            holdTicks: 0,
+            positionSize: portfolioSettings.positionSize,
+            entryFee,
+          });
+          openMarketIds.add(opportunity.id);
+          currentCapital += portfolioSettings.positionSize;
+        }
+
+        nextProfileStates[profile.id] = {
+          openedSequence: nextSequence,
+          openPositions: stillOpen,
+          closedTrades,
+        };
+
+        openedThisTick += profileOpenedThisTick;
+        closedThisTick += profileClosedThisTick;
       }
 
       return {
-        ...current,
-        openedSequence: nextSequence,
-        openPositions: stillOpen,
-        closedTrades,
         tickStats: [
           ...current.tickStats,
           {
@@ -328,13 +397,14 @@ export function OpportunityList({
             generated: opportunities.length,
             strongBuy: strongBuys.length,
             watch: watchList.length,
-            opened: tradesOpenedThisTick,
-            closed: tradesClosedThisTick,
+            opened: openedThisTick,
+            closed: closedThisTick,
           },
         ],
+        profileStates: nextProfileStates,
       };
     });
-  }, [opportunities, portfolioSettings, sessionSnapshot.startedAtIso, strategySettings, tick]);
+  }, [opportunities, portfolioSettings, sessionSnapshot.startedAtIso, tick]);
 
   const toPercent = (value: number) => `${(value * 100).toFixed(1)}%`;
   const toSignedPercent = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}%`;
@@ -350,9 +420,6 @@ export function OpportunityList({
     { key: 'minimumMomentum', label: 'Min momentum', step: 0.05 },
     { key: 'maximumVolatility', label: 'Max volatility', step: 0.05, min: 0 },
     { key: 'minimumTimeRemaining', label: 'Min time remaining', step: 0.05, min: 0 },
-    { key: 'takeProfitPercent', label: 'Take profit', step: 0.005, min: 0 },
-    { key: 'stopLossPercent', label: 'Stop loss', step: 0.005, min: 0 },
-    { key: 'maxHoldMinutes', label: 'Max hold (min)', step: 1, min: 1 },
   ];
 
   const portfolioFields: Array<{
@@ -375,19 +442,32 @@ export function OpportunityList({
     setPortfolioSettings((current) => ({ ...current, [key]: value }));
   };
 
-  const stats = useMemo(
-    () => computeSessionStats(simulatorState.closedTrades, simulatorState.openPositions),
-    [simulatorState.closedTrades, simulatorState.openPositions],
+  const profileStats = useMemo(
+    () =>
+      Object.fromEntries(
+        exitProfiles.map((profile) => {
+          const state = simulatorState.profileStates[profile.id] ?? {
+            openedSequence: 0,
+            openPositions: [],
+            closedTrades: [],
+          };
+          return [profile.id, computeSessionStats(state.closedTrades, state.openPositions)];
+        }),
+      ) as Record<string, SessionStats>,
+    [simulatorState.profileStates],
   );
+
+  const activeProfile =
+    exitProfiles.find((profile) => profile.id === activeProfileId) ?? exitProfiles[0];
+  const activeProfileState = simulatorState.profileStates[activeProfile.id];
+  const activeStats = profileStats[activeProfile.id] ?? emptyStats;
 
   const latestTickStats = simulatorState.tickStats[simulatorState.tickStats.length - 1];
 
   const resetSession = () => {
     setSimulatorState({
-      openedSequence: 0,
-      openPositions: [],
-      closedTrades: [],
       tickStats: [],
+      profileStates: createEmptyProfileStates(),
     });
     setTick(0);
     setSessionSnapshot({
@@ -438,43 +518,86 @@ export function OpportunityList({
 
       <section className="strategy-settings-panel">
         <header>
-          <h3>Session performance</h3>
+          <h3>Exit profile comparison</h3>
           <button type="button" onClick={resetSession}>
             Reset session
           </button>
         </header>
         <p className="reason">
-          Snapshot {new Date(sessionSnapshot.startedAtIso).toLocaleString()} · Tick every {LOOP_INTERVAL_MS / 1000}s
-          · TP {toPercent(sessionSnapshot.strategySettings.takeProfitPercent)} · SL{' '}
-          {toPercent(sessionSnapshot.strategySettings.stopLossPercent)} · Max hold{' '}
-          {sessionSnapshot.strategySettings.maxHoldMinutes}m · Max positions{' '}
-          {sessionSnapshot.portfolioSettings.maxConcurrentPositions}
+          Snapshot {new Date(sessionSnapshot.startedAtIso).toLocaleString()} · Tick every {LOOP_INTERVAL_MS / 1000}s ·
+          all profiles replay the same opportunity and watch-entry stream.
         </p>
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>Trades</th>
+                <th>Gross</th>
+                <th>Fees</th>
+                <th>Net</th>
+                <th>Avg gross</th>
+                <th>Avg net</th>
+                <th>Win rate</th>
+                <th>Max DD</th>
+                <th>Avg hold</th>
+                <th>Open</th>
+              </tr>
+            </thead>
+            <tbody>
+              {exitProfiles.map((profile) => {
+                const stats = profileStats[profile.id] ?? emptyStats;
+                return (
+                  <tr
+                    key={profile.id}
+                    onClick={() => setActiveProfileId(profile.id)}
+                    style={{
+                      cursor: 'pointer',
+                      fontWeight: profile.id === activeProfile.id ? 700 : 400,
+                    }}
+                  >
+                    <td>{profile.label}</td>
+                    <td>{stats.totalTrades}</td>
+                    <td>{toMoney(stats.grossPnl)}</td>
+                    <td>{toMoney(-stats.totalFees)}</td>
+                    <td>{toMoney(stats.netPnl)}</td>
+                    <td>{toMoney(stats.avgGrossPerTrade)}</td>
+                    <td>{toMoney(stats.avgNetPerTrade)}</td>
+                    <td>{toPercent(stats.winRate)}</td>
+                    <td>{toMoney(-stats.maxDrawdown)}</td>
+                    <td>{stats.avgHoldDurationMinutes.toFixed(1)}m</td>
+                    <td>{stats.openPositionsCount}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
         <div className="metrics-row">
           <span className="chip">Total ticks {tick}</span>
           <span className="chip">Generated this tick {latestTickStats?.generated ?? opportunities.length}</span>
-          <span className="chip">Strong buy this tick {latestTickStats?.strongBuy ?? opportunities.filter((opportunity) => opportunity.label === 'strong_buy').length}</span>
-          <span className="chip">Watch this tick {latestTickStats?.watch ?? opportunities.filter((opportunity) => opportunity.label === 'watch').length}</span>
-          <span className="chip">Opened this tick {latestTickStats?.opened ?? 0}</span>
-          <span className="chip">Closed this tick {latestTickStats?.closed ?? 0}</span>
-          <span className="chip">Trades {stats.totalTrades}</span>
-          <span className="chip">Gross {toMoney(stats.grossPnl)}</span>
-          <span className="chip">Fees {toMoney(-stats.totalFees)}</span>
-          <span className="chip">Net {toMoney(stats.netPnl)}</span>
-          <span className="chip">Avg gross {toMoney(stats.avgGrossPerTrade)}</span>
-          <span className="chip">Avg net {toMoney(stats.avgNetPerTrade)}</span>
-          <span className="chip">Win rate {toPercent(stats.winRate)}</span>
-          <span className="chip">Max DD {toMoney(-stats.maxDrawdown)}</span>
-          <span className="chip">Open {stats.openPositionsCount}</span>
-          <span className="chip">Capital ${stats.capitalDeployed.toFixed(2)}</span>
+          <span className="chip">
+            Strong buy this tick{' '}
+            {latestTickStats?.strongBuy ??
+              opportunities.filter((opportunity) => opportunity.label === 'strong_buy').length}
+          </span>
+          <span className="chip">
+            Watch this tick{' '}
+            {latestTickStats?.watch ??
+              opportunities.filter((opportunity) => opportunity.label === 'watch').length}
+          </span>
+          <span className="chip">Opened this tick (all profiles) {latestTickStats?.opened ?? 0}</span>
+          <span className="chip">Closed this tick (all profiles) {latestTickStats?.closed ?? 0}</span>
+          <span className="chip">Viewing {activeProfile.label}</span>
+          <span className="chip">Capital ${activeStats.capitalDeployed.toFixed(2)}</span>
         </div>
       </section>
 
-      {!!simulatorState.openPositions.length && (
+      {!!activeProfileState?.openPositions.length && (
         <section className="strategy-settings-panel">
-          <h3>Open positions</h3>
+          <h3>Open positions ({activeProfile.label})</h3>
           <div className="metrics-row">
-            {simulatorState.openPositions.map((position) => (
+            {activeProfileState.openPositions.map((position) => (
               <span key={position.id} className="chip">
                 {position.title} · {new Date(position.entryTimeIso).toLocaleTimeString()} · ${position.positionSize} ·{' '}
                 {position.holdTicks} ticks
@@ -484,11 +607,11 @@ export function OpportunityList({
         </section>
       )}
 
-      {!!simulatorState.closedTrades.length && (
+      {!!activeProfileState?.closedTrades.length && (
         <section className="strategy-settings-panel">
-          <h3>Recent closed trades</h3>
+          <h3>Recent closed trades ({activeProfile.label})</h3>
           <div className="metrics-row">
-            {simulatorState.closedTrades
+            {activeProfileState.closedTrades
               .slice(-8)
               .reverse()
               .map((trade) => (
